@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { compare, hash } from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto.js';
+import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserDto } from './dto/user.dto.js';
 import { UserEntity } from './user.entity.js';
@@ -25,6 +30,7 @@ export class UsersService {
 
   async update(id: number, dto: UpdateUserDto): Promise<UserDto> {
     await this.findEntityById(id);
+    await this.assertUniqueCredentials(id, dto);
 
     const data = { ...dto };
     if (data.password) {
@@ -35,8 +41,8 @@ export class UsersService {
     return this.getProfile(id);
   }
 
-  async findAll(): Promise<UserDto[]> {
-    const users = await this.usersRepository.findAll();
+  async findAll(query: FindUsersQueryDto): Promise<UserDto[]> {
+    const users = await this.usersRepository.findAll(query);
     return users.map((user) => this.toUserDto(user));
   }
 
@@ -45,9 +51,9 @@ export class UsersService {
     return this.toUserDto(user);
   }
 
-  async remove(id: number) {
+  async remove(id: number): Promise<void> {
     await this.findEntityById(id);
-    return this.usersRepository.remove(id);
+    await this.usersRepository.remove(id);
   }
 
   async getProfile(id: number): Promise<UserDto> {
@@ -81,6 +87,25 @@ export class UsersService {
     }
 
     return { id: user.id, login: user.login };
+  }
+
+  private async assertUniqueCredentials(
+    id: number,
+    dto: UpdateUserDto,
+  ): Promise<void> {
+    if (dto.login) {
+      const existing = await this.usersRepository.findOneByLogin(dto.login);
+      if (existing && existing.id !== id) {
+        throw new ConflictException('Login already taken');
+      }
+    }
+
+    if (dto.email) {
+      const existing = await this.usersRepository.findOneByEmail(dto.email);
+      if (existing && existing.id !== id) {
+        throw new ConflictException('Email already taken');
+      }
+    }
   }
 
   private async findEntityById(id: number): Promise<UserEntity> {

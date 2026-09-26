@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, Like, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto.js';
+import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserEntity } from './user.entity.js';
 
@@ -20,8 +21,29 @@ export class UsersRepository {
     return this.repo.update(id, user);
   }
 
-  findAll() {
-    return this.repo.find();
+  findAll(query: FindUsersQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    const sortBy = query.sortBy ?? 'login';
+    const sortOrder = query.sortOrder ?? 'ASC';
+    const where: FindOptionsWhere<UserEntity> = {};
+
+    if (query.login) {
+      where.login = Like(`%${query.login}%`);
+    }
+    if (query.email) {
+      where.email = Like(`%${query.email}%`);
+    }
+    if (query.age !== undefined) {
+      where.age = query.age;
+    }
+
+    return this.repo.find({
+      skip: (page - 1) * limit,
+      take: limit,
+      where,
+      order: { [sortBy]: sortOrder },
+    });
   }
 
   findOne(id: number) {
@@ -29,7 +51,7 @@ export class UsersRepository {
   }
 
   remove(id: number) {
-    return this.repo.delete(id);
+    return this.repo.softDelete(id);
   }
 
   findOneByLogin(login: string) {

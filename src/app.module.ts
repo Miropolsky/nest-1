@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthGuard } from './auth/auth.guard.js';
@@ -14,15 +14,19 @@ import { UsersModule } from './users/users.module.js';
       load: [configuration],
       isGlobal: true,
     }),
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: configuration().database.host,
-      port: configuration().database.port,
-      username: configuration().database.user,
-      password: configuration().database.password,
-      database: configuration().database.name,
-      autoLoadEntities: true,
-      synchronize: true,
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres' as const,
+        host: config.getOrThrow<string>('database.host'),
+        port: config.getOrThrow<number>('database.port'),
+        username: config.getOrThrow<string>('database.user'),
+        password: config.getOrThrow<string>('database.password'),
+        database: config.getOrThrow<string>('database.name'),
+        autoLoadEntities: true,
+        synchronize: true,
+      }),
     }),
     AuthModule,
   ],
