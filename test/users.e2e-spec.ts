@@ -11,7 +11,7 @@ describe('Users (e2e)', () => {
   const owner = {
     login: `owner_${stamp}`,
     email: `owner_${stamp}@example.com`,
-    password: '123456',
+    password: 'password1',
     age: 25,
     description: 'owner',
   };
@@ -19,7 +19,7 @@ describe('Users (e2e)', () => {
   const stranger = {
     login: `stranger_${stamp}`,
     email: `stranger_${stamp}@example.com`,
-    password: '123456',
+    password: 'password1',
     age: 30,
     description: 'stranger',
   };

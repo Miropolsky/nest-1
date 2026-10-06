@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { createHash } from 'node:crypto';
 import type { StringValue } from 'ms';
 import { CreateUserDto } from '../users/dto/create-user.dto.js';
 import type { AuthUser } from '../users/users.service.js';
@@ -55,6 +56,13 @@ export class AuthService {
         throw new UnauthorizedException('Invalid token type');
       }
 
+      const storedHash = await this.usersService.getRefreshTokenHash(
+        payload.sub,
+      );
+      if (!storedHash || storedHash !== this.hashToken(refreshToken)) {
+        throw new UnauthorizedException('Invalid refresh token');
+      }
+
       const user = await this.usersService.findOne(payload.sub);
       return this.issueTokens(user);
     } catch {
@@ -89,6 +97,15 @@ export class AuthService {
       ),
     ]);
 
+    await this.usersService.setRefreshTokenHash(
+      user.id,
+      this.hashToken(refresh_token),
+    );
+
     return { access_token, refresh_token };
+  }
+
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
   }
 }

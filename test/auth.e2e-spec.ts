@@ -9,7 +9,7 @@ describe('Auth + Profile (e2e)', () => {
   const user = {
     login: `auth_${Date.now()}`,
     email: `auth_${Date.now()}@example.com`,
-    password: '123456',
+    password: 'password1',
     age: 20,
     description: 'test user',
   };
@@ -44,6 +44,16 @@ describe('Auth + Profile (e2e)', () => {
       .send({
         ...user,
         email: `other_${Date.now()}@example.com`,
+      })
+      .expect(409);
+  });
+
+  it('POST /auth/register с тем же email → 409', async () => {
+    await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({
+        ...user,
+        login: `other_${Date.now()}`,
       })
       .expect(409);
   });
@@ -84,14 +94,25 @@ describe('Auth + Profile (e2e)', () => {
     refreshToken = res.body.refresh_token;
   });
 
-  it('POST /auth/refresh → обновляет пару токенов', async () => {
+  it('POST /auth/refresh → обновляет пару токенов и инвалидирует старый refresh', async () => {
+    const oldRefreshToken = refreshToken;
+
     const res = await request(app.getHttpServer())
       .post('/auth/refresh')
-      .send({ refresh_token: refreshToken })
+      .send({ refresh_token: oldRefreshToken })
       .expect(200);
 
     expect(res.body).toHaveProperty('access_token');
     expect(res.body).toHaveProperty('refresh_token');
+    expect(res.body.refresh_token).not.toBe(oldRefreshToken);
+
+    accessToken = res.body.access_token;
+    refreshToken = res.body.refresh_token;
+
+    await request(app.getHttpServer())
+      .post('/auth/refresh')
+      .send({ refresh_token: oldRefreshToken })
+      .expect(401);
   });
 
   it('POST /auth/refresh с мусором → 401', async () => {

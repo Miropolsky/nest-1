@@ -25,6 +25,9 @@ export class UserEntity {
   @Column()
   password: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  refreshTokenHash: string | null;
+
   @DeleteDateColumn()
   deletedAt: Date | null;
 }

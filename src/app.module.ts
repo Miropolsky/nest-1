@@ -25,7 +25,7 @@ import { UsersModule } from './users/users.module.js';
         password: config.getOrThrow<string>('database.password'),
         database: config.getOrThrow<string>('database.name'),
         autoLoadEntities: true,
-        synchronize: true,
+        synchronize: false,
       }),
     }),
     AuthModule,

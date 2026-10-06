@@ -14,7 +14,7 @@ export class SignInDto {
   @IsNotEmpty()
   @ApiProperty({
     description: 'Пароль пользователя',
-    example: '123456',
+    example: 'password1',
   })
   password: string;
 }

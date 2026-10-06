@@ -61,4 +61,8 @@ export class UsersRepository {
   findOneByEmail(email: string) {
     return this.repo.findOneBy({ email });
   }
+
+  updateRefreshTokenHash(id: number, refreshTokenHash: string | null) {
+    return this.repo.update(id, { refreshTokenHash });
+  }
 }

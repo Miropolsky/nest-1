@@ -7,6 +7,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 export class CreateUserDto {
@@ -28,9 +29,11 @@ export class CreateUserDto {
 
   @IsString()
   @IsNotEmpty()
+  @MinLength(8)
   @ApiProperty({
-    description: 'Пароль пользователя',
-    example: '123456',
+    description: 'Пароль пользователя (минимум 8 символов)',
+    example: 'password1',
+    minLength: 8,
   })
   password: string;
 
