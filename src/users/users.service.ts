@@ -1,11 +1,15 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { compare, hash } from 'bcrypt';
+import { PinoLogger } from 'nestjs-pino';
 import { QueryFailedError } from 'typeorm';
+import { ActiveUserDto } from './dto/active-user.dto.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
+import { FindActiveUsersQueryDto } from './dto/find-active-users.query.dto.js';
 import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserDto } from './dto/user.dto.js';
@@ -25,7 +29,12 @@ type PgDriverError = {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly usersRepository: UsersRepository) {}
+  constructor(
+    private readonly usersRepository: UsersRepository,
+    private readonly logger: PinoLogger,
+  ) {
+    this.logger.setContext(UsersService.name);
+  }
 
   async create(dto: CreateUserDto): Promise<UserDto> {
     try {
@@ -33,8 +42,10 @@ export class UsersService {
         ...dto,
         password: await hash(dto.password, 10),
       });
+
       return this.toUserDto(user);
     } catch (error) {
+      this.logWriteFailure(error, 'User registration failed');
       this.rethrowUniqueViolation(error);
     }
   }
@@ -51,15 +62,33 @@ export class UsersService {
     try {
       await this.usersRepository.update(id, data);
     } catch (error) {
+      this.logWriteFailure(error, 'User update failed', id);
       this.rethrowUniqueViolation(error);
     }
 
+    this.logger.info({ userId: id }, 'User updated');
     return this.getProfile(id);
   }
 
   async findAll(query: FindUsersQueryDto): Promise<UserDto[]> {
     const users = await this.usersRepository.findAll(query);
     return users.map((user) => this.toUserDto(user));
+  }
+
+  async findActiveUsers(
+    query: FindActiveUsersQueryDto,
+  ): Promise<ActiveUserDto[]> {
+    if (
+      query.minAge !== undefined &&
+      query.maxAge !== undefined &&
+      query.minAge > query.maxAge
+    ) {
+      throw new BadRequestException(
+        'minAge must be less than or equal to maxAge',
+      );
+    }
+
+    return this.usersRepository.findActiveUsers(query);
   }
 
   async findOne(id: number): Promise<UserDto> {
@@ -71,6 +100,7 @@ export class UsersService {
     await this.findEntityById(id);
     await this.usersRepository.updateRefreshTokenHash(id, null);
     await this.usersRepository.remove(id);
+    this.logger.info({ userId: id }, 'User deleted');
   }
 
   async getProfile(id: number): Promise<UserDto> {
@@ -153,6 +183,28 @@ export class UsersService {
       description: user.description,
       age: user.age,
     };
+  }
+
+  private logWriteFailure(
+    error: unknown,
+    message: string,
+    userId?: number,
+  ): void {
+    if (this.isPgUniqueViolation(error)) {
+      this.logger.warn(
+        userId === undefined ? {} : { userId },
+        'User already exists',
+      );
+      return;
+    }
+
+    this.logger.error(
+      {
+        userId,
+        name: error instanceof Error ? error.name : 'UnknownError',
+      },
+      message,
+    );
   }
 
   private rethrowUniqueViolation(error: unknown): never {

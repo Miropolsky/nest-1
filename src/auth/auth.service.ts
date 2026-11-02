@@ -1,12 +1,14 @@
 import {
   ConflictException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { createHash } from 'node:crypto';
 import type { StringValue } from 'ms';
+import { PinoLogger } from 'nestjs-pino';
+import { createHash } from 'node:crypto';
 import { CreateUserDto } from '../users/dto/create-user.dto.js';
 import type { AuthUser } from '../users/users.service.js';
 import { UsersService } from '../users/users.service.js';
@@ -18,28 +20,45 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) {}
+    private logger: PinoLogger,
+  ) {
+    this.logger.setContext(AuthService.name);
+  }
 
   async signIn(login: string, pass: string): Promise<AuthTokens> {
     const user = await this.usersService.validateCredentials(login, pass);
 
     if (!user) {
+      this.logger.warn({ login }, 'Sign-in rejected');
       throw new UnauthorizedException('Invalid credentials');
     }
+
+    this.logger.info({ userId: user.id }, 'User signed in');
 
     return this.issueTokens(user);
   }
 
   async register(signUpDto: CreateUserDto): Promise<AuthTokens> {
     if (await this.usersService.existsByLogin(signUpDto.login)) {
+      this.logger.warn(
+        { login: signUpDto.login },
+        'Registration rejected: login taken',
+      );
       throw new ConflictException('Login already taken');
     }
 
     if (await this.usersService.existsByEmail(signUpDto.email)) {
+      this.logger.warn(
+        { email: signUpDto.email },
+        'Registration rejected: email taken',
+      );
       throw new ConflictException('Email already taken');
     }
 
     const user = await this.usersService.create(signUpDto);
+
+    this.logger.info({ userId: user.id }, 'User registered');
+
     return this.issueTokens(user);
   }
 
@@ -64,8 +83,21 @@ export class AuthService {
       }
 
       const user = await this.usersService.findOne(payload.sub);
+      this.logger.info({ userId: user.id }, 'Tokens refreshed');
       return this.issueTokens(user);
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof UnauthorizedException ||
+        error instanceof NotFoundException ||
+        this.isJwtError(error)
+      ) {
+        this.logger.warn('Refresh token rejected');
+      } else {
+        this.logger.error(
+          { name: error instanceof Error ? error.name : 'UnknownError' },
+          'Token refresh failed',
+        );
+      }
       throw new UnauthorizedException('Invalid refresh token');
     }
   }
@@ -107,5 +139,16 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
+  }
+
+  private isJwtError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    return (
+      error.name === 'JsonWebTokenError' ||
+      error.name === 'TokenExpiredError' ||
+      error.name === 'NotBeforeError'
+    );
   }
 }

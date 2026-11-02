@@ -2,8 +2,11 @@ import {
   Column,
   DeleteDateColumn,
   Entity,
+  OneToMany,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
+import { AvatarEntity } from '../avatars/avatar.entity.js';
 
 @Entity()
 export class UserEntity {
@@ -30,4 +33,7 @@ export class UserEntity {
 
   @DeleteDateColumn()
   deletedAt: Date | null;
+
+  @OneToMany(() => AvatarEntity, (avatar: AvatarEntity) => avatar.user)
+  avatars: Relation<AvatarEntity>[];
 }
