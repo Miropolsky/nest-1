@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   ParseIntPipe,
+  Post,
   Put,
   Query,
 } from '@nestjs/common';
@@ -23,6 +24,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { ActiveUserDto } from './dto/active-user.dto.js';
 import { FindActiveUsersQueryDto } from './dto/find-active-users.query.dto.js';
 import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
+import { TransferDto } from './dto/transfer.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserDto } from './dto/user.dto.js';
 import { UsersService } from './users.service.js';
@@ -36,6 +38,24 @@ export class UsersController {
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(UsersController.name);
+  }
+
+  @Post('transfer')
+  @ApiOperation({ summary: 'Перевести деньги между пользователями' })
+  @ApiResponse({
+    status: 200,
+    description: 'Деньги переведены',
+    type: UserDto,
+  })
+  @ApiResponse({ status: 401, description: 'Не авторизован' })
+  @ApiResponse({ status: 403, description: 'Нет доступа' })
+  @ApiResponse({ status: 404, description: 'Пользователь не найден' })
+  @ApiResponse({ status: 409, description: 'Недостаточно средств' })
+  transfer(
+    @Body() transferDto: TransferDto,
+    @CurrentUser() current: JwtPayload,
+  ) {
+    return this.usersService.transfer(transferDto, Number(current.sub));
   }
 
   @Put(':id')

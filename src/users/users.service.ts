@@ -1,16 +1,20 @@
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { compare, hash } from 'bcrypt';
+import type { Cache } from 'cache-manager';
 import { PinoLogger } from 'nestjs-pino';
-import { QueryFailedError } from 'typeorm';
+import { DataSource, QueryFailedError } from 'typeorm';
 import { ActiveUserDto } from './dto/active-user.dto.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { FindActiveUsersQueryDto } from './dto/find-active-users.query.dto.js';
 import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
+import { TransferDto } from './dto/transfer.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserDto } from './dto/user.dto.js';
 import { UserEntity } from './user.entity.js';
@@ -32,6 +36,8 @@ export class UsersService {
   constructor(
     private readonly usersRepository: UsersRepository,
     private readonly logger: PinoLogger,
+    private readonly dataSource: DataSource,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {
     this.logger.setContext(UsersService.name);
   }
@@ -67,12 +73,69 @@ export class UsersService {
     }
 
     this.logger.info({ userId: id }, 'User updated');
+    await this.cache.del(this.userCacheKey(id));
     return this.getProfile(id);
   }
 
+  async transfer(transferDto: TransferDto, id_user: number): Promise<UserDto> {
+    const { amount, recipientId } = transferDto;
+
+    if (Number(amount) <= 0 || !Number.isFinite(Number(amount))) {
+      throw new BadRequestException('Некорректная сумма');
+    }
+
+    if (id_user === Number(recipientId)) {
+      throw new BadRequestException('Нельзя перевести самому себе');
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      const debit = await manager
+        .createQueryBuilder()
+        .update(UserEntity)
+        .set({
+          balance: () => '"balance" - :amount',
+        })
+        .where('id = :id', { id: id_user })
+        .andWhere('balance >= :amount', { amount })
+        .setParameter('amount', amount)
+        .execute();
+
+      if (debit.affected === 0) {
+        throw new BadRequestException(
+          'Недостаточно средств или пользователь не найден',
+        );
+      }
+
+      const credit = await manager
+        .createQueryBuilder()
+        .update(UserEntity)
+        .set({
+          balance: () => '"balance" + :amount',
+        })
+        .where('id = :id', { id: Number(recipientId) })
+        .setParameter('amount', amount)
+        .execute();
+
+      if (credit.affected === 0) {
+        throw new BadRequestException('Не удалось перевести деньги');
+      }
+    });
+
+    await Promise.all([
+      this.cache.del(this.userCacheKey(id_user)),
+      this.cache.del(this.userCacheKey(Number(recipientId))),
+    ]);
+
+    return this.cache.wrap(this.userCacheKey(id_user), async () =>
+      this.loadProfile(id_user),
+    );
+  }
+
   async findAll(query: FindUsersQueryDto): Promise<UserDto[]> {
-    const users = await this.usersRepository.findAll(query);
-    return users.map((user) => this.toUserDto(user));
+    return this.cache.wrap(this.usersListCacheKey(query), async () => {
+      const users = await this.usersRepository.findAll(query);
+      return users.map((user) => this.toUserDto(user));
+    });
   }
 
   async findActiveUsers(
@@ -92,20 +155,19 @@ export class UsersService {
   }
 
   async findOne(id: number): Promise<UserDto> {
-    const user = await this.findEntityById(id);
-    return this.toUserDto(user);
+    return this.cache.wrap(this.userCacheKey(id), () => this.loadProfile(id));
   }
 
   async remove(id: number): Promise<void> {
     await this.findEntityById(id);
     await this.usersRepository.updateRefreshTokenHash(id, null);
     await this.usersRepository.remove(id);
+    await this.cache.del(this.userCacheKey(id));
     this.logger.info({ userId: id }, 'User deleted');
   }
 
   async getProfile(id: number): Promise<UserDto> {
-    const user = await this.findEntityById(id);
-    return this.toUserDto(user);
+    return this.findOne(id);
   }
 
   async existsByLogin(login: string): Promise<boolean> {
@@ -167,6 +229,33 @@ export class UsersService {
     }
   }
 
+  private async loadProfile(id: number): Promise<UserDto> {
+    const user = await this.findEntityById(id);
+    return this.toUserDto(user);
+  }
+
+  private userCacheKey(id: number): string {
+    return `users:one:${id}`;
+  }
+
+  private usersListCacheKey(query: FindUsersQueryDto): string {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    const sortBy = query.sortBy ?? 'login';
+    const sortOrder = query.sortOrder ?? 'ASC';
+
+    return [
+      'users:list',
+      page,
+      limit,
+      query.login ?? '',
+      query.email ?? '',
+      query.age ?? '',
+      sortBy,
+      sortOrder,
+    ].join(':');
+  }
+
   private async findEntityById(id: number): Promise<UserEntity> {
     const user = await this.usersRepository.findOne(id);
     if (!user) {
@@ -182,6 +271,7 @@ export class UsersService {
       email: user.email,
       description: user.description,
       age: user.age,
+      balance: user.balance,
     };
   }
 

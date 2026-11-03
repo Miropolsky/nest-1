@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   DeleteDateColumn,
   Entity,
@@ -36,4 +37,14 @@ export class UserEntity {
 
   @OneToMany(() => AvatarEntity, (avatar: AvatarEntity) => avatar.user)
   avatars: Relation<AvatarEntity>[];
+
+  @Check('balance >= 0')
+  @Column({
+    name: 'balance',
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
+  balance: string;
 }

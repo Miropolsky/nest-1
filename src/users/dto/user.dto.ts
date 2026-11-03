@@ -15,4 +15,7 @@ export class UserDto {
 
   @ApiProperty({ example: 20 })
   age: number;
+
+  @ApiProperty({ example: 0 })
+  balance: string;
 }

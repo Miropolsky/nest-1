@@ -1,17 +1,19 @@
+import { createKeyv } from '@keyv/redis';
+import { CacheModule } from '@nestjs/cache-manager';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import type { Request, Response } from 'express';
 import { ClsModule, ClsService } from 'nestjs-cls';
-import { LoggerModule } from 'nestjs-pino';
+import { LoggerModule, PinoLogger } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
 import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
+import { AvatarsModule } from './avatars/avatars.module.js';
 import configuration from './config/configuration.js';
 import { S3Module } from './providers/s3/s3.module.js';
 import { UsersModule } from './users/users.module.js';
-import { AvatarsModule } from './avatars/avatars.module.js';
 
 type RequestWithId = Request & { id?: string };
 
@@ -93,6 +95,25 @@ function resolveRequestId(req: RequestWithId): string {
         autoLoadEntities: true,
         synchronize: false,
       }),
+    }),
+    CacheModule.registerAsync({
+      isGlobal: true,
+      inject: [ConfigService, PinoLogger],
+      useFactory: (config: ConfigService, logger: PinoLogger) => {
+        logger.setContext('Redis');
+        const store = createKeyv(config.getOrThrow<string>('redis.url'));
+        store.on('error', (error: unknown) => {
+          logger.error(
+            { name: error instanceof Error ? error.name : 'UnknownError' },
+            'Redis error',
+          );
+        });
+
+        return {
+          stores: [store],
+          ttl: config.getOrThrow<number>('redis.ttl'),
+        };
+      },
     }),
     AuthModule,
     S3Module,

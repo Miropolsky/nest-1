@@ -19,4 +19,8 @@ export default () => ({
     accessKeyId: process.env.S3_ACCESS_KEY_ID,
     secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
   },
+  redis: {
+    url: process.env.REDIS_URL,
+    ttl: parseInt(process.env.REDIS_TTL ?? '30000', 10),
+  },
 });
