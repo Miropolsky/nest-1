@@ -8,9 +8,13 @@ import type { Request, Response } from 'express';
 import { ClsModule, ClsService } from 'nestjs-cls';
 import { LoggerModule, PinoLogger } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
+
+import { BullModule } from '@nestjs/bullmq';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AvatarsModule } from './avatars/avatars.module.js';
+import { BalancesModule } from './balances/balances.module.js';
 import configuration from './config/configuration.js';
 import { S3Module } from './providers/s3/s3.module.js';
 import { UsersModule } from './users/users.module.js';
@@ -115,9 +119,21 @@ function resolveRequestId(req: RequestWithId): string {
         };
       },
     }),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        connection: {
+          url: config.getOrThrow<string>('redis.url'),
+          maxRetriesPerRequest: null,
+        },
+      }),
+    }),
+    ScheduleModule.forRoot(),
     AuthModule,
     S3Module,
     AvatarsModule,
+    BalancesModule,
   ],
   providers: [
     {
