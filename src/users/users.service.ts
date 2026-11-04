@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { compare, hash } from 'bcrypt';
 import type { Cache } from 'cache-manager';
+import { Decimal } from 'decimal.js';
 import { PinoLogger } from 'nestjs-pino';
 import { DataSource, QueryFailedError } from 'typeorm';
 import { ActiveUserDto } from './dto/active-user.dto.js';
@@ -33,6 +34,8 @@ type PgDriverError = {
 
 @Injectable()
 export class UsersService {
+  private readonly pendingReads = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly usersRepository: UsersRepository,
     private readonly logger: PinoLogger,
@@ -48,8 +51,9 @@ export class UsersService {
         ...dto,
         password: await hash(dto.password, 10),
       });
-
-      return this.toUserDto(user);
+      const created = this.toUserDto(user);
+      await this.invalidateListCache();
+      return created;
     } catch (error) {
       this.logWriteFailure(error, 'User registration failed');
       this.rethrowUniqueViolation(error);
@@ -73,18 +77,15 @@ export class UsersService {
     }
 
     this.logger.info({ userId: id }, 'User updated');
-    await this.cache.del(this.userCacheKey(id));
+    await this.invalidateProfiles(id);
     return this.getProfile(id);
   }
 
   async transfer(transferDto: TransferDto, id_user: number): Promise<UserDto> {
-    const { amount, recipientId } = transferDto;
+    const amount = this.parseAmount(transferDto.amount);
+    const recipientId = Number(transferDto.recipientId);
 
-    if (Number(amount) <= 0 || !Number.isFinite(Number(amount))) {
-      throw new BadRequestException('Некорректная сумма');
-    }
-
-    if (id_user === Number(recipientId)) {
+    if (id_user === recipientId) {
       throw new BadRequestException('Нельзя перевести самому себе');
     }
 
@@ -93,10 +94,10 @@ export class UsersService {
         .createQueryBuilder()
         .update(UserEntity)
         .set({
-          balance: () => '"balance" - :amount',
+          balance: () => '"balance" - CAST(:amount AS numeric)',
         })
         .where('id = :id', { id: id_user })
-        .andWhere('balance >= :amount', { amount })
+        .andWhere('"balance" >= CAST(:amount AS numeric)')
         .setParameter('amount', amount)
         .execute();
 
@@ -110,9 +111,9 @@ export class UsersService {
         .createQueryBuilder()
         .update(UserEntity)
         .set({
-          balance: () => '"balance" + :amount',
+          balance: () => '"balance" + CAST(:amount AS numeric)',
         })
-        .where('id = :id', { id: Number(recipientId) })
+        .where('id = :id', { id: recipientId })
         .setParameter('amount', amount)
         .execute();
 
@@ -121,18 +122,15 @@ export class UsersService {
       }
     });
 
-    await Promise.all([
-      this.cache.del(this.userCacheKey(id_user)),
-      this.cache.del(this.userCacheKey(Number(recipientId))),
-    ]);
+    await this.invalidateProfiles(id_user, recipientId);
 
-    return this.cache.wrap(this.userCacheKey(id_user), async () =>
+    return this.readThrough(this.userCacheKey(id_user), () =>
       this.loadProfile(id_user),
     );
   }
 
   async findAll(query: FindUsersQueryDto): Promise<UserDto[]> {
-    return this.cache.wrap(this.usersListCacheKey(query), async () => {
+    return this.readThrough(this.usersListCacheKey(query), async () => {
       const users = await this.usersRepository.findAll(query);
       return users.map((user) => this.toUserDto(user));
     });
@@ -155,14 +153,14 @@ export class UsersService {
   }
 
   async findOne(id: number): Promise<UserDto> {
-    return this.cache.wrap(this.userCacheKey(id), () => this.loadProfile(id));
+    return this.readThrough(this.userCacheKey(id), () => this.loadProfile(id));
   }
 
   async remove(id: number): Promise<void> {
     await this.findEntityById(id);
     await this.usersRepository.updateRefreshTokenHash(id, null);
     await this.usersRepository.remove(id);
-    await this.cache.del(this.userCacheKey(id));
+    await this.invalidateProfiles(id);
     this.logger.info({ userId: id }, 'User deleted');
   }
 
@@ -232,6 +230,90 @@ export class UsersService {
   private async loadProfile(id: number): Promise<UserDto> {
     const user = await this.findEntityById(id);
     return this.toUserDto(user);
+  }
+
+  private parseAmount(amount: string): string {
+    let value: Decimal;
+    try {
+      value = new Decimal(amount);
+    } catch {
+      throw new BadRequestException('Некорректная сумма');
+    }
+
+    if (!value.isFinite() || value.lte(0) || value.decimalPlaces() > 2) {
+      throw new BadRequestException('Некорректная сумма');
+    }
+
+    return value.toFixed(2);
+  }
+
+  private readThrough<T>(key: string, loader: () => Promise<T>): Promise<T> {
+    const pending = this.pendingReads.get(key);
+    if (pending) {
+      return pending as Promise<T>;
+    }
+
+    const promise = this.loadThroughCache(key, loader).finally(() => {
+      if (this.pendingReads.get(key) === promise) {
+        this.pendingReads.delete(key);
+      }
+    });
+    this.pendingReads.set(key, promise);
+    return promise;
+  }
+
+  private async loadThroughCache<T>(
+    key: string,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    const cached = await this.cache.get<T>(key);
+    if (cached !== undefined && cached !== null) {
+      return cached;
+    }
+
+    const value = await loader();
+    await this.cache.set(key, value);
+    return value;
+  }
+
+  private async invalidateProfiles(...ids: number[]): Promise<void> {
+    await Promise.all(ids.map((id) => this.cache.del(this.userCacheKey(id))));
+    await this.invalidateListCache();
+  }
+
+  private async invalidateListCache(): Promise<void> {
+    const keys = new Set<string>();
+
+    for (const store of this.cache.stores as Array<{
+      iterator?: () => AsyncIterable<unknown>;
+    }>) {
+      if (!store.iterator) {
+        continue;
+      }
+
+      for await (const entry of store.iterator()) {
+        const rawKey = Array.isArray(entry) ? entry[0] : undefined;
+        if (typeof rawKey !== 'string') {
+          continue;
+        }
+
+        const separator = rawKey.indexOf('::');
+        const withoutPrefix =
+          separator === -1 ? rawKey : rawKey.slice(separator + 2);
+        const key =
+          withoutPrefix.startsWith('users:list:') ||
+          withoutPrefix.startsWith('users:one:')
+            ? withoutPrefix
+            : rawKey;
+        if (key.startsWith('users:list:')) {
+          keys.add(key);
+        }
+      }
+    }
+
+    if (keys.size > 0) {
+      await this.cache.mdel([...keys]);
+    }
   }
 
   private userCacheKey(id: number): string {

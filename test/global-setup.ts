@@ -28,6 +28,7 @@ export async function setup() {
     JWT_REFRESH_SECRET: 'e2e-refresh-secret',
     JWT_EXPIRES_IN: '1h',
     JWT_REFRESH_EXPIRES_IN: '7d',
+    S3_BUCKET: 'avatars',
   };
 
   writeFileSync(TC_ENV_PATH, JSON.stringify(env, null, 2));

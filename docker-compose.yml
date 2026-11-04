@@ -26,6 +26,17 @@ services:
     volumes:
       - minio_data:/data
 
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        until mc alias set local http://minio:9000 nestuser nestpass; do sleep 2; done
+        mc mb --ignore-existing local/avatars
+    restart: 'no'
+
   redis:
     image: redis:7-alpine
     container_name: nest-1-redis

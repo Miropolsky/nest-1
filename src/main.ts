@@ -6,6 +6,7 @@ import { AppModule } from './app.module.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.enableShutdownHooks();
   const logger = app.get(Logger);
   app.useLogger(logger);
 

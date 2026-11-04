@@ -10,7 +10,6 @@ import { LoggerModule, PinoLogger } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
 
 import { BullModule } from '@nestjs/bullmq';
-import { ScheduleModule } from '@nestjs/schedule';
 import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AvatarsModule } from './avatars/avatars.module.js';
@@ -129,7 +128,6 @@ function resolveRequestId(req: RequestWithId): string {
         },
       }),
     }),
-    ScheduleModule.forRoot(),
     AuthModule,
     S3Module,
     AvatarsModule,

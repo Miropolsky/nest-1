@@ -5,6 +5,7 @@ import {
   ParseIntPipe,
   Post,
   UploadedFile,
+  UseFilters,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -18,7 +19,9 @@ import {
 } from '@nestjs/swagger';
 import type { JwtPayload } from '../auth/constants.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
+import { MAX_AVATAR_SIZE } from './avatar-file.js';
 import { AvatarsService } from './avatars.service.js';
+import { AvatarUploadExceptionFilter } from './filters/avatar-upload-exception.filter.js';
 import { AvatarFilePipe } from './pipes/avatar-file.pipe.js';
 
 @ApiTags('avatars')
@@ -48,7 +51,10 @@ export class AvatarsController {
       },
     },
   })
-  @UseInterceptors(FileInterceptor('file'))
+  @UseFilters(AvatarUploadExceptionFilter)
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_AVATAR_SIZE } }),
+  )
   uploadFile(
     @UploadedFile(AvatarFilePipe) file: Express.Multer.File,
     @CurrentUser() current: JwtPayload,

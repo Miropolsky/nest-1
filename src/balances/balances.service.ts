@@ -1,11 +1,23 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { PinoLogger } from 'nestjs-pino';
 
+const RESET_JOB = 'reset-all-balances';
+const RESET_EVERY_MS = 10 * 60 * 1000;
+
+const resetJobOptions = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 5000,
+  },
+  removeOnComplete: true,
+  removeOnFail: 100,
+};
+
 @Injectable()
-export class BalancesService {
+export class BalancesService implements OnModuleInit {
   constructor(
     private readonly logger: PinoLogger,
     @InjectQueue('balances') private readonly balancesQueue: Queue,
@@ -13,21 +25,21 @@ export class BalancesService {
     this.logger.setContext(BalancesService.name);
   }
 
-  async resetBalances() {
-    const job = await this.balancesQueue.add(
-      'reset-all-balances',
-      {},
+  async onModuleInit(): Promise<void> {
+    await this.balancesQueue.upsertJobScheduler(
+      'reset-all-balances-every-10-minutes',
+      { every: RESET_EVERY_MS },
       {
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
-        },
-        removeOnComplete: true,
-        removeOnFail: false,
-        jobId: 'reset-all-balances',
+        name: RESET_JOB,
+        data: {},
+        opts: resetJobOptions,
       },
     );
+    this.logger.info('Balances reset scheduler registered');
+  }
+
+  async resetBalances() {
+    const job = await this.balancesQueue.add(RESET_JOB, {}, resetJobOptions);
 
     this.logger.info({ jobId: job.id }, 'Balances reset job added to queue');
 
@@ -35,10 +47,5 @@ export class BalancesService {
       message: 'Balances reset job added to queue',
       jobId: job.id,
     };
-  }
-
-  @Cron('*/10 * * * *')
-  async resetBalancesCron() {
-    await this.resetBalances();
   }
 }

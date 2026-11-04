@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
+import { DataSource } from 'typeorm';
 import { S3Service } from '../providers/s3/s3.service.js';
 import { AvatarsRepository } from './avatars.repository.js';
 
@@ -15,6 +16,7 @@ export class AvatarsService {
   constructor(
     private readonly s3Service: S3Service,
     private readonly avatarsRepository: AvatarsRepository,
+    private readonly dataSource: DataSource,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(AvatarsService.name);
@@ -24,30 +26,41 @@ export class AvatarsService {
     file: Express.Multer.File,
     userId: number,
   ): Promise<string> {
-    const activeCount = await this.avatarsRepository.countActive(userId);
-    if (activeCount >= MAX_ACTIVE_AVATARS) {
-      this.logger.warn(
-        { userId, activeCount },
-        'Avatar upload rejected: limit reached',
+    const fileName = await this.dataSource.transaction(async (manager) => {
+      await this.avatarsRepository.lockUser(userId, manager);
+      const activeCount = await this.avatarsRepository.countActive(
+        userId,
+        manager,
       );
-      throw new BadRequestException('You can have at most 5 active avatars');
-    }
+      if (activeCount >= MAX_ACTIVE_AVATARS) {
+        this.logger.warn(
+          { userId, activeCount },
+          'Avatar upload rejected: limit reached',
+        );
+        throw new BadRequestException('You can have at most 5 active avatars');
+      }
 
-    const fileName = await this.s3Service.upload(file);
+      const uploadedName = await this.s3Service.upload(file);
 
-    try {
-      await this.avatarsRepository.save({ userId, fileName });
-    } catch (error) {
-      await this.removeUploadedFile(fileName, userId);
-      this.logger.error(
-        {
-          userId,
-          name: error instanceof Error ? error.name : 'UnknownError',
-        },
-        'Avatar save failed',
-      );
-      throw error;
-    }
+      try {
+        await this.avatarsRepository.save(
+          { userId, fileName: uploadedName },
+          manager,
+        );
+      } catch (error) {
+        await this.removeUploadedFile(uploadedName, userId);
+        this.logger.error(
+          {
+            userId,
+            name: error instanceof Error ? error.name : 'UnknownError',
+          },
+          'Avatar save failed',
+        );
+        throw error;
+      }
+
+      return uploadedName;
+    });
 
     this.logger.info({ userId }, 'Avatar uploaded');
     return fileName;

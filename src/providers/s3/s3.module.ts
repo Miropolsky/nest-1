@@ -1,4 +1,3 @@
-// src/providers/s3/s3.module.ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
