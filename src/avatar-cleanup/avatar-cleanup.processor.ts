@@ -41,7 +41,7 @@ export class AvatarCleanupProcessor extends WorkerHost {
     let failed = 0;
     let afterId = 0;
 
-    for (;;) {
+    while (true) {
       const avatars = await this.avatarsRepository.findDeletedBefore(
         cutoff,
         afterId,
