@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
-import { DataSource } from 'typeorm';
+import { DataSource, type EntityManager } from 'typeorm';
 import { S3Service } from '../providers/s3/s3.service.js';
 import { AvatarsRepository } from './avatars.repository.js';
 
@@ -26,29 +26,19 @@ export class AvatarsService {
     file: Express.Multer.File,
     userId: number,
   ): Promise<string> {
-    const fileName = await this.dataSource.transaction(async (manager) => {
-      await this.avatarsRepository.lockUser(userId, manager);
-      const activeCount = await this.avatarsRepository.countActive(
-        userId,
-        manager,
-      );
-      if (activeCount >= MAX_ACTIVE_AVATARS) {
-        this.logger.warn(
-          { userId, activeCount },
-          'Avatar upload rejected: limit reached',
-        );
-        throw new BadRequestException('You can have at most 5 active avatars');
-      }
+    await this.dataSource.transaction((manager) =>
+      this.assertSlotAvailable(userId, manager),
+    );
 
-      const uploadedName = await this.s3Service.upload(file);
-
-      try {
-        await this.avatarsRepository.save(
-          { userId, fileName: uploadedName },
-          manager,
-        );
-      } catch (error) {
-        await this.removeUploadedFile(uploadedName, userId);
+    const fileName = await this.s3Service.upload(file);
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        await this.assertSlotAvailable(userId, manager);
+        await this.avatarsRepository.save({ userId, fileName }, manager);
+      });
+    } catch (error) {
+      await this.removeUploadedFile(fileName, userId);
+      if (!(error instanceof BadRequestException)) {
         this.logger.error(
           {
             userId,
@@ -56,11 +46,9 @@ export class AvatarsService {
           },
           'Avatar save failed',
         );
-        throw error;
       }
-
-      return uploadedName;
-    });
+      throw error;
+    }
 
     this.logger.info({ userId }, 'Avatar uploaded');
     return fileName;
@@ -84,6 +72,24 @@ export class AvatarsService {
     this.logger.info({ userId, avatarId: id }, 'Avatar deleted');
   }
 
+  private async assertSlotAvailable(
+    userId: number,
+    manager: EntityManager,
+  ): Promise<void> {
+    await this.avatarsRepository.lockUser(userId, manager);
+    const activeCount = await this.avatarsRepository.countActive(
+      userId,
+      manager,
+    );
+    if (activeCount >= MAX_ACTIVE_AVATARS) {
+      this.logger.warn(
+        { userId, activeCount },
+        'Avatar upload rejected: limit reached',
+      );
+      throw new BadRequestException('You can have at most 5 active avatars');
+    }
+  }
+
   private async removeUploadedFile(
     fileName: string,
     userId: number,
@@ -96,7 +102,7 @@ export class AvatarsService {
           userId,
           name: error instanceof Error ? error.name : 'UnknownError',
         },
-        'Avatar cleanup failed',
+        'Failed to remove uploaded avatar',
       );
     }
   }

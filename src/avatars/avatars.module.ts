@@ -9,5 +9,6 @@ import { AvatarsService } from './avatars.service.js';
   imports: [TypeOrmModule.forFeature([AvatarEntity])],
   controllers: [AvatarsController],
   providers: [AvatarsService, AvatarsRepository],
+  exports: [AvatarsRepository],
 })
 export class AvatarsModule {}

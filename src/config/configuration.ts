@@ -24,4 +24,21 @@ export default () => ({
     url: process.env.REDIS_URL,
     ttl: parseInt(process.env.REDIS_TTL ?? '30000', 10),
   },
+  avatarCleanup: {
+    cron: process.env.AVATAR_CLEANUP_CRON || '0 3 * * *',
+    retentionDays: positiveInt(process.env.AVATAR_CLEANUP_RETENTION_DAYS, 7),
+  },
 });
+
+function positiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error('AVATAR_CLEANUP_RETENTION_DAYS must be a positive integer');
+  }
+
+  return value;
+}

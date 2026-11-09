@@ -10,10 +10,11 @@ import { LoggerModule, PinoLogger } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
 
 import { BullModule } from '@nestjs/bullmq';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
+import { AvatarCleanupModule } from './avatar-cleanup/avatar-cleanup.module.js';
 import { AvatarsModule } from './avatars/avatars.module.js';
-import { BalancesModule } from './balances/balances.module.js';
 import configuration from './config/configuration.js';
 import { S3Module } from './providers/s3/s3.module.js';
 import { UsersModule } from './users/users.module.js';
@@ -118,6 +119,7 @@ function resolveRequestId(req: RequestWithId): string {
         };
       },
     }),
+    ScheduleModule.forRoot(),
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -131,7 +133,7 @@ function resolveRequestId(req: RequestWithId): string {
     AuthModule,
     S3Module,
     AvatarsModule,
-    BalancesModule,
+    AvatarCleanupModule,
   ],
   providers: [
     {

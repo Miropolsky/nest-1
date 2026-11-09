@@ -37,4 +37,20 @@ export class AvatarsRepository {
   softDelete(id: number) {
     return this.repo.softDelete(id);
   }
+
+  findDeletedBefore(cutoff: Date, afterId: number, limit: number) {
+    return this.repo
+      .createQueryBuilder('avatar')
+      .withDeleted()
+      .where('avatar.deletedAt IS NOT NULL')
+      .andWhere('avatar.deletedAt < :cutoff', { cutoff })
+      .andWhere('avatar.id > :afterId', { afterId })
+      .orderBy('avatar.id', 'ASC')
+      .take(limit)
+      .getMany();
+  }
+
+  hardDelete(id: number) {
+    return this.repo.delete(id);
+  }
 }

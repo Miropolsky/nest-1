@@ -48,7 +48,10 @@ describe('AvatarsService', () => {
   } as Express.Multer.File;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    dataSource.transaction.mockImplementation(
+      async (work: (trx: EntityManager) => Promise<unknown>) => work(manager),
+    );
   });
 
   it('не сохраняет шестой аватар и берёт блокировку до подсчёта', async () => {
@@ -64,6 +67,59 @@ describe('AvatarsService', () => {
     );
     expect(s3.upload).not.toHaveBeenCalled();
     expect(repository.save).not.toHaveBeenCalled();
+  });
+
+  it('загружает файл вне транзакции и сохраняет ключ после повторной проверки лимита', async () => {
+    repository.countActive.mockResolvedValue(1);
+    s3.upload.mockResolvedValue('avatars/new.jpg');
+
+    await expect(service.uploadAvatar(uploaded, 7)).resolves.toBe(
+      'avatars/new.jpg',
+    );
+
+    expect(s3.upload.mock.invocationCallOrder[0]).toBeGreaterThan(
+      repository.lockUser.mock.invocationCallOrder[0],
+    );
+    expect(repository.save.mock.invocationCallOrder[0]).toBeGreaterThan(
+      s3.upload.mock.invocationCallOrder[0],
+    );
+    expect(repository.save).toHaveBeenCalledWith(
+      { userId: 7, fileName: 'avatars/new.jpg' },
+      manager,
+    );
+    expect(s3.remove).not.toHaveBeenCalled();
+  });
+
+  it('удаляет объект, если запись в транзакции не сохранилась', async () => {
+    repository.countActive.mockResolvedValue(1);
+    s3.upload.mockResolvedValue('avatars/new.jpg');
+    repository.save.mockRejectedValue(new Error('insert failed'));
+
+    await expect(service.uploadAvatar(uploaded, 7)).rejects.toThrow(
+      'insert failed',
+    );
+    expect(s3.remove).toHaveBeenCalledWith('avatars/new.jpg');
+  });
+
+  it('удаляет объект, если транзакция не зафиксировалась после save', async () => {
+    repository.countActive.mockResolvedValue(1);
+    s3.upload.mockResolvedValue('avatars/new.jpg');
+    dataSource.transaction
+      .mockImplementationOnce(
+        async (work: (trx: EntityManager) => Promise<unknown>) => work(manager),
+      )
+      .mockImplementationOnce(
+        async (work: (trx: EntityManager) => Promise<unknown>) => {
+          await work(manager);
+          throw new Error('commit failed');
+        },
+      );
+
+    await expect(service.uploadAvatar(uploaded, 7)).rejects.toThrow(
+      'commit failed',
+    );
+    expect(repository.save).toHaveBeenCalled();
+    expect(s3.remove).toHaveBeenCalledWith('avatars/new.jpg');
   });
 
   it('удаляет только аватар владельца', async () => {
