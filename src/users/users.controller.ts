@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   ParseIntPipe,
+  Post,
   Put,
   Query,
 } from '@nestjs/common';
@@ -17,9 +18,13 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { PinoLogger } from 'nestjs-pino';
 import type { JwtPayload } from '../auth/constants.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
+import { ActiveUserDto } from './dto/active-user.dto.js';
+import { FindActiveUsersQueryDto } from './dto/find-active-users.query.dto.js';
 import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
+import { TransferDto } from './dto/transfer.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserDto } from './dto/user.dto.js';
 import { UsersService } from './users.service.js';
@@ -28,7 +33,39 @@ import { UsersService } from './users.service.js';
 @ApiBearerAuth()
 @Controller('users')
 export class UsersController {
-  constructor(private usersService: UsersService) {}
+  constructor(
+    private usersService: UsersService,
+    private readonly logger: PinoLogger,
+  ) {
+    this.logger.setContext(UsersController.name);
+  }
+
+  @Post('transfer')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Перевести деньги между пользователями' })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Деньги переведены',
+    type: UserDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Некорректная сумма, перевод себе или недостаточно средств',
+  })
+  @ApiResponse({
+    status: HttpStatus.UNAUTHORIZED,
+    description: 'Не авторизован',
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: 'Пользователь не найден',
+  })
+  transfer(
+    @Body() transferDto: TransferDto,
+    @CurrentUser() current: JwtPayload,
+  ) {
+    return this.usersService.transfer(transferDto, Number(current.sub));
+  }
 
   @Put(':id')
   @ApiOperation({ summary: 'Обновить пользователя' })
@@ -63,6 +100,21 @@ export class UsersController {
     return this.usersService.findAll(query);
   }
 
+  @Get('active-users')
+  @ApiOperation({
+    summary: 'Активные пользователи в заданном возрасте',
+  })
+  @ApiResponse({
+    status: 200,
+    type: ActiveUserDto,
+    isArray: true,
+  })
+  @ApiResponse({ status: 400, description: 'Неверный промежуток возраста' })
+  @ApiResponse({ status: 401, description: 'Не авторизован' })
+  findActiveUsers(@Query() query: FindActiveUsersQueryDto) {
+    return this.usersService.findActiveUsers(query);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Получить пользователя по ID' })
   @ApiResponse({
@@ -93,6 +145,10 @@ export class UsersController {
 
   private assertSelf(current: JwtPayload, id: number) {
     if (current.sub !== id) {
+      this.logger.warn(
+        { userId: current.sub, targetId: id },
+        'User tried to modify another profile',
+      );
       throw new ForbiddenException('You can only modify your own profile');
     }
   }

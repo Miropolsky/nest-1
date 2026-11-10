@@ -12,5 +12,41 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  minio:
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    container_name: nest-1-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    environment:
+      MINIO_ROOT_USER: nestuser
+      MINIO_ROOT_PASSWORD: nestpass
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        until mc alias set local http://minio:9000 nestuser nestpass; do sleep 2; done
+        mc mb --ignore-existing local/avatars
+    restart: 'no'
+
+  redis:
+    image: redis:7-alpine
+    container_name: nest-1-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
 volumes:
   postgres_data:
+  minio_data:
+  redis_data:

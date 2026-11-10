@@ -1,9 +1,13 @@
 import {
+  Check,
   Column,
   DeleteDateColumn,
   Entity,
+  OneToMany,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
+import { AvatarEntity } from '../avatars/avatar.entity.js';
 
 @Entity()
 export class UserEntity {
@@ -28,6 +32,19 @@ export class UserEntity {
   @Column({ type: 'varchar', nullable: true })
   refreshTokenHash: string | null;
 
-  @DeleteDateColumn()
+  @DeleteDateColumn({ type: 'timestamptz' })
   deletedAt: Date | null;
+
+  @OneToMany(() => AvatarEntity, (avatar: AvatarEntity) => avatar.user)
+  avatars: Relation<AvatarEntity>[];
+
+  @Check('balance >= 0')
+  @Column({
+    name: 'balance',
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+  })
+  balance: string;
 }
