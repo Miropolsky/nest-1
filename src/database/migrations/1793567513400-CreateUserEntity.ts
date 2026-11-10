@@ -12,7 +12,7 @@ export class CreateUserEntity1793567513400 implements MigrationInterface {
         "description" character varying NOT NULL,
         "email" character varying NOT NULL,
         "password" character varying NOT NULL,
-        "deletedAt" TIMESTAMP,
+        "deletedAt" TIMESTAMPTZ,
         CONSTRAINT "PK_b54f8ea623b17094db7667d8206" PRIMARY KEY ("id"),
         CONSTRAINT "UQ_e74b542753b5bf00d728607f81a" UNIQUE ("login"),
         CONSTRAINT "UQ_415c35b9b3b6fe45a3b065030f5" UNIQUE ("email")

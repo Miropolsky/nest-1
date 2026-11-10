@@ -15,7 +15,8 @@ import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AvatarCleanupModule } from './avatar-cleanup/avatar-cleanup.module.js';
 import { AvatarsModule } from './avatars/avatars.module.js';
-import configuration from './config/configuration.js';
+import { configurations } from './config/index.js';
+import { validateEnv } from './config/env.schema.js';
 import { S3Module } from './providers/s3/s3.module.js';
 import { UsersModule } from './users/users.module.js';
 
@@ -83,7 +84,8 @@ function resolveRequestId(req: RequestWithId): string {
     }),
     UsersModule,
     ConfigModule.forRoot({
-      load: [configuration],
+      load: configurations,
+      validate: validateEnv,
       isGlobal: true,
     }),
     TypeOrmModule.forRootAsync({

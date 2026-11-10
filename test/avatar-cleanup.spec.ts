@@ -2,6 +2,7 @@ import type { ConfigService } from '@nestjs/config';
 import type { SchedulerRegistry } from '@nestjs/schedule';
 import type { Job, Queue } from 'bullmq';
 import { CronJob } from 'cron';
+import type { ClsService } from 'nestjs-cls';
 import type { PinoLogger } from 'nestjs-pino';
 import { AvatarCleanupProcessor } from '../src/avatar-cleanup/avatar-cleanup.processor.js';
 import { AvatarCleanupScheduler } from '../src/avatar-cleanup/avatar-cleanup.scheduler.js';
@@ -19,6 +20,18 @@ function logger() {
     warn: vi.fn(),
     error: vi.fn(),
   };
+}
+
+function clsService(activeId?: string): ClsService {
+  let currentId = activeId;
+  return {
+    isActive: vi.fn(() => Boolean(currentId)),
+    getId: vi.fn(() => currentId),
+    set: vi.fn((_key: unknown, value: string) => {
+      currentId = value;
+    }),
+    run: vi.fn((callback: () => unknown) => callback()),
+  } as unknown as ClsService;
 }
 
 function config(values: Record<string, string | number>): ConfigService {
@@ -39,12 +52,13 @@ describe('очистка аватаров', () => {
     await Promise.all(jobs.splice(0).map((job) => Promise.resolve(job.stop())));
   });
 
-  it('ручной запуск ставит ту же задачу в очередь с retry', async () => {
+  it('ручной запуск ставит ту же задачу в очередь с requestId', async () => {
     const queue = {
       add: vi.fn().mockResolvedValue({ id: 'manual-1' }),
     };
     const service = new AvatarCleanupService(
       queue as unknown as Queue,
+      clsService('http-request-id'),
       logger() as unknown as PinoLogger,
     );
 
@@ -52,16 +66,11 @@ describe('очистка аватаров', () => {
 
     expect(queue.add).toHaveBeenCalledWith(
       'cleanup-deleted-avatars',
-      {},
+      { requestId: 'http-request-id' },
       expect.objectContaining({
         attempts: 3,
         backoff: { type: 'exponential', delay: 5000 },
       }),
-    );
-    expect(queue.add).toHaveBeenCalledWith(
-      'cleanup-deleted-avatars',
-      {},
-      expect.not.objectContaining({ jobId: 'cleanup-deleted-avatars' }),
     );
     expect(accepted.jobId).toBe('manual-1');
   });
@@ -79,6 +88,7 @@ describe('очистка аватаров', () => {
       registry as unknown as SchedulerRegistry,
       config({ 'avatarCleanup.cron': '0 3 * * *' }),
       { enqueue } as unknown as AvatarCleanupService,
+      clsService(),
       logger() as unknown as PinoLogger,
     );
 
@@ -151,6 +161,23 @@ describe('очистка аватаров', () => {
     expect(stored).toHaveLength(0);
   });
 
+  it('удаляет orphan-объект без записи в БД', async () => {
+    const s3 = { remove: vi.fn().mockResolvedValue(undefined) };
+    const processor = createProcessor(memoryRepository([]), s3);
+
+    await processor.process({
+      id: 'orphan-1',
+      name: 'remove-orphan-avatar',
+      data: {
+        fileName: 'avatars/orphan.jpg',
+        userId: 7,
+        requestId: 'orphan-request-id',
+      },
+    } as Job);
+
+    expect(s3.remove).toHaveBeenCalledWith('avatars/orphan.jpg');
+  });
+
   it('пишет в лог число удалённых и число ошибок и обрабатывает пачками', async () => {
     const stored = Array.from({ length: 101 }, (_, index) =>
       avatar(
@@ -175,6 +202,7 @@ describe('очистка аватаров', () => {
       repository as unknown as AvatarsRepository,
       s3 as unknown as S3Service,
       config({ 'avatarCleanup.retentionDays': 7 }),
+      clsService(),
       log as unknown as PinoLogger,
     );
 
@@ -200,12 +228,17 @@ function createProcessor(
     repository as unknown as AvatarsRepository,
     s3 as unknown as S3Service,
     config({ 'avatarCleanup.retentionDays': 7 }),
+    clsService(),
     logger() as unknown as PinoLogger,
   );
 }
 
 function cleanupJob(): Job {
-  return { id: 'job-1', name: 'cleanup-deleted-avatars' } as Job;
+  return {
+    id: 'job-1',
+    name: 'cleanup-deleted-avatars',
+    data: { requestId: 'job-request-id' },
+  } as Job;
 }
 
 function avatar(

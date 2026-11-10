@@ -30,15 +30,29 @@ describe('UsersService cache', () => {
     create: vi.fn(),
     update: vi.fn(),
   };
+  const cacheStore = new Map<string, unknown>();
   const cache = {
-    get: vi.fn(),
-    set: vi.fn(),
-    del: vi.fn(),
-    mdel: vi.fn(),
+    get: vi.fn(async (key: string) => cacheStore.get(key)),
+    set: vi.fn(async (key: string, value: unknown) => {
+      cacheStore.set(key, value);
+    }),
+    del: vi.fn(async (key: string) => {
+      cacheStore.delete(key);
+      return true;
+    }),
+    mdel: vi.fn(async (keys: string[]) => {
+      for (const key of keys) {
+        cacheStore.delete(key);
+      }
+      return true;
+    }),
     stores: [
       {
         iterator: async function* () {
-          yield ['users:list:1:10:::login:ASC', null];
+          yield [
+            'users:list:{"page":1,"limit":10,"login":"","email":"","age":"","sortBy":"login","sortOrder":"ASC"}',
+            null,
+          ];
           yield ['users:one:1', null];
         },
       },
@@ -54,10 +68,21 @@ describe('UsersService cache', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cache.get.mockResolvedValue(undefined);
-    cache.set.mockResolvedValue(undefined);
-    cache.del.mockResolvedValue(true);
-    cache.mdel.mockResolvedValue(true);
+    cacheStore.clear();
+    cache.get.mockImplementation(async (key: string) => cacheStore.get(key));
+    cache.set.mockImplementation(async (key: string, value: unknown) => {
+      cacheStore.set(key, value);
+    });
+    cache.del.mockImplementation(async (key: string) => {
+      cacheStore.delete(key);
+      return true;
+    });
+    cache.mdel.mockImplementation(async (keys: string[]) => {
+      for (const key of keys) {
+        cacheStore.delete(key);
+      }
+      return true;
+    });
   });
 
   it('один промах кэша выполняет один запрос в базу', async () => {
@@ -84,7 +109,9 @@ describe('UsersService cache', () => {
       age: 20,
     });
 
-    expect(cache.mdel).toHaveBeenCalledWith(['users:list:1:10:::login:ASC']);
+    expect(cache.mdel).toHaveBeenCalledWith([
+      'users:list:{"page":1,"limit":10,"login":"","email":"","age":"","sortBy":"login","sortOrder":"ASC"}',
+    ]);
     expect(cache.del).not.toHaveBeenCalled();
   });
 
@@ -95,6 +122,61 @@ describe('UsersService cache', () => {
     await service.update(1, { description: 'updated' });
 
     expect(cache.del).toHaveBeenCalledWith('users:one:1');
-    expect(cache.mdel).toHaveBeenCalledWith(['users:list:1:10:::login:ASC']);
+    expect(cache.set).toHaveBeenCalledWith('users:one:1:version', 1);
+    expect(cache.set).toHaveBeenCalledWith('users:list:version', 1);
+    expect(cache.mdel).toHaveBeenCalledWith([
+      'users:list:{"page":1,"limit":10,"login":"","email":"","age":"","sortBy":"login","sortOrder":"ASC"}',
+    ]);
+  });
+
+  it('не пишет в кэш профиль, если во время чтения была инвалидация', async () => {
+    let resolveLoad: ((value: typeof user) => void) | undefined;
+    repository.findOne.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+
+    const pending = service.findOne(1);
+    await vi.waitFor(() => {
+      expect(repository.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    repository.findOne.mockResolvedValue({
+      ...user,
+      description: 'updated',
+    });
+    repository.update.mockResolvedValue(undefined);
+    await service.update(1, { description: 'updated' });
+    cacheStore.delete('users:one:1');
+    cache.set.mockClear();
+
+    resolveLoad?.(user);
+    await pending;
+
+    expect(cache.set.mock.calls.some(([key]) => key === 'users:one:1')).toBe(
+      false,
+    );
+    expect(cacheStore.has('users:one:1')).toBe(false);
+  });
+
+  it('фильтры с ":" не дают одинаковый ключ списка', async () => {
+    repository.findAll.mockResolvedValue([]);
+
+    await service.findAll({ login: 'a:b', email: 'c' });
+    await service.findAll({ login: 'a', email: 'b:c' });
+
+    const profileOrListSets = cache.set.mock.calls.filter(
+      ([key]) =>
+        typeof key === 'string' &&
+        (key.startsWith('users:list:{') || key.startsWith('users:one:')),
+    );
+    expect(profileOrListSets).toHaveLength(2);
+    const [firstKey] = profileOrListSets[0] as [string];
+    const [secondKey] = profileOrListSets[1] as [string];
+    expect(firstKey).not.toBe(secondKey);
+    expect(firstKey).toContain('"login":"a:b"');
+    expect(secondKey).toContain('"email":"b:c"');
   });
 });

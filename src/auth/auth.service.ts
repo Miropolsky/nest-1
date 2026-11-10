@@ -13,6 +13,7 @@ import { CreateUserDto } from '../users/dto/create-user.dto.js';
 import type { AuthUser } from '../users/users.service.js';
 import { UsersService } from '../users/users.service.js';
 import type { AuthTokens, JwtPayload } from './constants.js';
+import { isJwtError } from './helpers/is-jwt-error.js';
 
 @Injectable()
 export class AuthService {
@@ -89,7 +90,7 @@ export class AuthService {
       if (
         error instanceof UnauthorizedException ||
         error instanceof NotFoundException ||
-        this.isJwtError(error)
+        isJwtError(error)
       ) {
         this.logger.warn('Refresh token rejected');
       } else {
@@ -139,16 +140,5 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
-  }
-
-  private isJwtError(error: unknown): boolean {
-    if (!(error instanceof Error)) {
-      return false;
-    }
-    return (
-      error.name === 'JsonWebTokenError' ||
-      error.name === 'TokenExpiredError' ||
-      error.name === 'NotBeforeError'
-    );
   }
 }

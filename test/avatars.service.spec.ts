@@ -3,6 +3,8 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import type { Queue } from 'bullmq';
+import type { ClsService } from 'nestjs-cls';
 import type { PinoLogger } from 'nestjs-pino';
 import type { DataSource, EntityManager } from 'typeorm';
 import type { AvatarsRepository } from '../src/avatars/avatars.repository.js';
@@ -29,6 +31,13 @@ describe('AvatarsService', () => {
     softDelete: vi.fn(),
   };
   const s3 = { upload: vi.fn(), remove: vi.fn() };
+  const cleanupQueue = {
+    add: vi.fn().mockResolvedValue({ id: 'orphan-1' }),
+  };
+  const cls = {
+    isActive: vi.fn(() => true),
+    getId: vi.fn(() => 'request-id'),
+  };
   const dataSource = {
     transaction: vi.fn(async (work: (trx: EntityManager) => Promise<unknown>) =>
       work(manager),
@@ -40,6 +49,8 @@ describe('AvatarsService', () => {
     repository as unknown as AvatarsRepository,
     dataSource as unknown as DataSource,
     logger(),
+    cleanupQueue as unknown as Queue,
+    cls as unknown as ClsService,
   );
 
   const uploaded = {
@@ -49,9 +60,12 @@ describe('AvatarsService', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    cls.isActive.mockImplementation(() => true);
+    cls.getId.mockImplementation(() => 'request-id');
     dataSource.transaction.mockImplementation(
       async (work: (trx: EntityManager) => Promise<unknown>) => work(manager),
     );
+    cleanupQueue.add.mockResolvedValue({ id: 'orphan-1' });
   });
 
   it('не сохраняет шестой аватар и берёт блокировку до подсчёта', async () => {
@@ -99,6 +113,31 @@ describe('AvatarsService', () => {
       'insert failed',
     );
     expect(s3.remove).toHaveBeenCalledWith('avatars/new.jpg');
+    expect(cleanupQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ставит ключ в очередь, если сохранение и удаление из S3 оба упали', async () => {
+    repository.countActive.mockResolvedValue(1);
+    s3.upload.mockResolvedValue('avatars/new.jpg');
+    repository.save.mockRejectedValue(new Error('insert failed'));
+    s3.remove.mockRejectedValue(new Error('MinIO unavailable'));
+
+    await expect(service.uploadAvatar(uploaded, 7)).rejects.toThrow(
+      'insert failed',
+    );
+
+    expect(cleanupQueue.add).toHaveBeenCalledWith(
+      'remove-orphan-avatar',
+      {
+        fileName: 'avatars/new.jpg',
+        userId: 7,
+        requestId: 'request-id',
+      },
+      expect.objectContaining({
+        attempts: 5,
+        jobId: 'orphan:avatars/new.jpg',
+      }),
+    );
   });
 
   it('удаляет объект, если транзакция не зафиксировалась после save', async () => {

@@ -1,11 +1,21 @@
+import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Queue } from 'bullmq';
+import { ClsService } from 'nestjs-cls';
 import { PinoLogger } from 'nestjs-pino';
 import { DataSource, type EntityManager } from 'typeorm';
+import {
+  AVATAR_CLEANUP_QUEUE,
+  AVATAR_ORPHAN_REMOVE_JOB,
+  avatarOrphanRemoveJobOptions,
+} from '../avatar-cleanup/avatar-cleanup.constants.js';
+import type { AvatarOrphanRemoveJobData } from '../avatar-cleanup/avatar-cleanup.job.js';
+import { resolveRequestId } from '../common/cls/run-with-request-id.js';
 import { S3Service } from '../providers/s3/s3.service.js';
 import { AvatarsRepository } from './avatars.repository.js';
 
@@ -18,6 +28,8 @@ export class AvatarsService {
     private readonly avatarsRepository: AvatarsRepository,
     private readonly dataSource: DataSource,
     private readonly logger: PinoLogger,
+    @InjectQueue(AVATAR_CLEANUP_QUEUE) private readonly cleanupQueue: Queue,
+    private readonly cls: ClsService,
   ) {
     this.logger.setContext(AvatarsService.name);
   }
@@ -100,9 +112,47 @@ export class AvatarsService {
       this.logger.error(
         {
           userId,
+          fileName,
           name: error instanceof Error ? error.name : 'UnknownError',
         },
         'Failed to remove uploaded avatar',
+      );
+      await this.enqueueOrphanRemoval(fileName, userId);
+    }
+  }
+
+  private async enqueueOrphanRemoval(
+    fileName: string,
+    userId: number,
+  ): Promise<void> {
+    const requestId = resolveRequestId(this.cls);
+
+    try {
+      const job = await this.cleanupQueue.add(
+        AVATAR_ORPHAN_REMOVE_JOB,
+        {
+          fileName,
+          userId,
+          requestId,
+        } satisfies AvatarOrphanRemoveJobData,
+        {
+          ...avatarOrphanRemoveJobOptions,
+          jobId: `orphan:${fileName}`,
+        },
+      );
+
+      this.logger.warn(
+        { userId, fileName, jobId: job.id, requestId },
+        'Orphan avatar removal enqueued',
+      );
+    } catch (error) {
+      this.logger.error(
+        {
+          userId,
+          fileName,
+          name: error instanceof Error ? error.name : 'UnknownError',
+        },
+        'Failed to enqueue orphan avatar removal',
       );
     }
   }

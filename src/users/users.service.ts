@@ -8,9 +8,8 @@ import {
 } from '@nestjs/common';
 import { compare, hash } from 'bcrypt';
 import type { Cache } from 'cache-manager';
-import { Decimal } from 'decimal.js';
 import { PinoLogger } from 'nestjs-pino';
-import { DataSource, QueryFailedError } from 'typeorm';
+import { DataSource } from 'typeorm';
 import { ActiveUserDto } from './dto/active-user.dto.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { FindActiveUsersQueryDto } from './dto/find-active-users.query.dto.js';
@@ -18,18 +17,14 @@ import { FindUsersQueryDto } from './dto/find-users.query.dto.js';
 import { TransferDto } from './dto/transfer.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UserDto } from './dto/user.dto.js';
+import { UserUniqueViolationError } from './errors/user-unique-violation.error.js';
+import { parseAmount } from './helpers/parse-amount.js';
 import { UserEntity } from './user.entity.js';
 import { UsersRepository } from './users.repository.js';
 
 export type AuthUser = {
   id: number;
   login: string;
-};
-
-type PgDriverError = {
-  code?: string;
-  detail?: string;
-  constraint?: string;
 };
 
 @Injectable()
@@ -82,58 +77,79 @@ export class UsersService {
   }
 
   async transfer(transferDto: TransferDto, id_user: number): Promise<UserDto> {
-    const amount = this.parseAmount(transferDto.amount);
-    const recipientId = Number(transferDto.recipientId);
+    const amount = parseAmount(transferDto.amount);
+    const recipientId = transferDto.recipientId;
 
     if (id_user === recipientId) {
       throw new BadRequestException('Нельзя перевести самому себе');
     }
 
     await this.dataSource.transaction(async (manager) => {
-      const debit = await manager
-        .createQueryBuilder()
-        .update(UserEntity)
-        .set({
-          balance: () => '"balance" - CAST(:amount AS numeric)',
-        })
-        .where('id = :id', { id: id_user })
-        .andWhere('"balance" >= CAST(:amount AS numeric)')
-        .setParameter('amount', amount)
-        .execute();
+      const [firstId, secondId] =
+        id_user < recipientId ? [id_user, recipientId] : [recipientId, id_user];
 
-      if (debit.affected === 0) {
-        throw new BadRequestException(
-          'Недостаточно средств или пользователь не найден',
-        );
+      const first = await this.usersRepository.lockActiveUser(firstId, manager);
+      const second = await this.usersRepository.lockActiveUser(
+        secondId,
+        manager,
+      );
+      if (!first || !second) {
+        throw new NotFoundException('User not found');
       }
 
-      const credit = await manager
-        .createQueryBuilder()
-        .update(UserEntity)
-        .set({
-          balance: () => '"balance" + CAST(:amount AS numeric)',
-        })
-        .where('id = :id', { id: recipientId })
-        .setParameter('amount', amount)
-        .execute();
+      const debit = await this.usersRepository.debitBalance(
+        id_user,
+        amount,
+        manager,
+      );
+      if (debit.affected === 0) {
+        throw new BadRequestException('Недостаточно средств');
+      }
 
+      const credit = await this.usersRepository.creditBalance(
+        recipientId,
+        amount,
+        manager,
+      );
       if (credit.affected === 0) {
-        throw new BadRequestException('Не удалось перевести деньги');
+        throw new NotFoundException('User not found');
       }
     });
 
-    await this.invalidateProfiles(id_user, recipientId);
-
-    return this.readThrough(this.userCacheKey(id_user), () =>
-      this.loadProfile(id_user),
+    this.logger.info(
+      {
+        senderId: id_user,
+        recipientId,
+        amount,
+      },
+      'Transfer completed',
     );
+
+    try {
+      await this.invalidateProfiles(id_user, recipientId);
+    } catch (error) {
+      this.logger.error(
+        {
+          senderId: id_user,
+          recipientId,
+          name: error instanceof Error ? error.name : 'UnknownError',
+        },
+        'Cache invalidation failed after transfer',
+      );
+    }
+
+    return this.loadProfile(id_user);
   }
 
   async findAll(query: FindUsersQueryDto): Promise<UserDto[]> {
-    return this.readThrough(this.usersListCacheKey(query), async () => {
-      const users = await this.usersRepository.findAll(query);
-      return users.map((user) => this.toUserDto(user));
-    });
+    return this.readThrough(
+      this.usersListCacheKey(query),
+      async () => {
+        const users = await this.usersRepository.findAll(query);
+        return users.map((user) => this.toUserDto(user));
+      },
+      this.usersListCacheVersionKey(),
+    );
   }
 
   async findActiveUsers(
@@ -153,7 +169,11 @@ export class UsersService {
   }
 
   async findOne(id: number): Promise<UserDto> {
-    return this.readThrough(this.userCacheKey(id), () => this.loadProfile(id));
+    return this.readThrough(
+      this.userCacheKey(id),
+      () => this.loadProfile(id),
+      this.userCacheVersionKey(id),
+    );
   }
 
   async remove(id: number): Promise<void> {
@@ -232,32 +252,23 @@ export class UsersService {
     return this.toUserDto(user);
   }
 
-  private parseAmount(amount: string): string {
-    let value: Decimal;
-    try {
-      value = new Decimal(amount);
-    } catch {
-      throw new BadRequestException('Некорректная сумма');
-    }
-
-    if (!value.isFinite() || value.lte(0) || value.decimalPlaces() > 2) {
-      throw new BadRequestException('Некорректная сумма');
-    }
-
-    return value.toFixed(2);
-  }
-
-  private readThrough<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  private readThrough<T>(
+    key: string,
+    loader: () => Promise<T>,
+    versionKey?: string,
+  ): Promise<T> {
     const pending = this.pendingReads.get(key);
     if (pending) {
       return pending as Promise<T>;
     }
 
-    const promise = this.loadThroughCache(key, loader).finally(() => {
-      if (this.pendingReads.get(key) === promise) {
-        this.pendingReads.delete(key);
-      }
-    });
+    const promise = this.loadThroughCache(key, loader, versionKey).finally(
+      () => {
+        if (this.pendingReads.get(key) === promise) {
+          this.pendingReads.delete(key);
+        }
+      },
+    );
     this.pendingReads.set(key, promise);
     return promise;
   }
@@ -265,23 +276,54 @@ export class UsersService {
   private async loadThroughCache<T>(
     key: string,
     loader: () => Promise<T>,
+    versionKey?: string,
   ): Promise<T> {
+    const version =
+      versionKey === undefined
+        ? undefined
+        : await this.getCacheVersion(versionKey);
+
     const cached = await this.cache.get<T>(key);
     if (cached !== undefined && cached !== null) {
       return cached;
     }
 
     const value = await loader();
+
+    if (
+      versionKey !== undefined &&
+      (await this.getCacheVersion(versionKey)) !== version
+    ) {
+      return value;
+    }
+
     await this.cache.set(key, value);
     return value;
   }
 
   private async invalidateProfiles(...ids: number[]): Promise<void> {
-    await Promise.all(ids.map((id) => this.cache.del(this.userCacheKey(id))));
+    await Promise.all(ids.map((id) => this.invalidateProfile(id)));
     await this.invalidateListCache();
   }
 
+  private async invalidateProfile(id: number): Promise<void> {
+    const key = this.userCacheKey(id);
+    this.pendingReads.delete(key);
+    await Promise.all([
+      this.cache.del(key),
+      this.bumpCacheVersion(this.userCacheVersionKey(id)),
+    ]);
+  }
+
   private async invalidateListCache(): Promise<void> {
+    for (const key of this.pendingReads.keys()) {
+      if (key.startsWith('users:list:')) {
+        this.pendingReads.delete(key);
+      }
+    }
+
+    await this.bumpCacheVersion(this.usersListCacheVersionKey());
+
     const keys = new Set<string>();
 
     for (const store of this.cache.stores as Array<{
@@ -316,26 +358,45 @@ export class UsersService {
     }
   }
 
+  private async getCacheVersion(versionKey: string): Promise<number> {
+    const raw = await this.cache.get<unknown>(versionKey);
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return raw;
+    }
+    if (typeof raw === 'string' && raw.trim() !== '') {
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+  }
+
+  private async bumpCacheVersion(versionKey: string): Promise<void> {
+    const next = (await this.getCacheVersion(versionKey)) + 1;
+    await this.cache.set(versionKey, next);
+  }
+
   private userCacheKey(id: number): string {
     return `users:one:${id}`;
   }
 
-  private usersListCacheKey(query: FindUsersQueryDto): string {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 10;
-    const sortBy = query.sortBy ?? 'login';
-    const sortOrder = query.sortOrder ?? 'ASC';
+  private userCacheVersionKey(id: number): string {
+    return `users:one:${id}:version`;
+  }
 
-    return [
-      'users:list',
-      page,
-      limit,
-      query.login ?? '',
-      query.email ?? '',
-      query.age ?? '',
-      sortBy,
-      sortOrder,
-    ].join(':');
+  private usersListCacheVersionKey(): string {
+    return 'users:list:version';
+  }
+
+  private usersListCacheKey(query: FindUsersQueryDto): string {
+    return `users:list:${JSON.stringify({
+      page: query.page ?? 1,
+      limit: query.limit ?? 10,
+      login: query.login ?? '',
+      email: query.email ?? '',
+      age: query.age ?? '',
+      sortBy: query.sortBy ?? 'login',
+      sortOrder: query.sortOrder ?? 'ASC',
+    })}`;
   }
 
   private async findEntityById(id: number): Promise<UserEntity> {
@@ -362,7 +423,7 @@ export class UsersService {
     message: string,
     userId?: number,
   ): void {
-    if (this.isPgUniqueViolation(error)) {
+    if (error instanceof UserUniqueViolationError) {
       this.logger.warn(
         userId === undefined ? {} : { userId },
         'User already exists',
@@ -380,47 +441,17 @@ export class UsersService {
   }
 
   private rethrowUniqueViolation(error: unknown): never {
-    if (!this.isPgUniqueViolation(error)) {
+    if (!(error instanceof UserUniqueViolationError)) {
       throw error;
     }
 
-    const driverError = this.getPgDriverError(error);
-    const hint =
-      `${driverError.constraint ?? ''} ${driverError.detail ?? ''}`.toLowerCase();
-
-    if (hint.includes('login')) {
+    if (error.field === 'login') {
       throw new ConflictException('Login already taken');
     }
-    if (hint.includes('email')) {
+    if (error.field === 'email') {
       throw new ConflictException('Email already taken');
     }
 
     throw new ConflictException('User already exists');
-  }
-
-  private isPgUniqueViolation(error: unknown): boolean {
-    if (!(error instanceof QueryFailedError)) {
-      return false;
-    }
-    return this.getPgDriverError(error).code === '23505';
-  }
-
-  private getPgDriverError(error: unknown): PgDriverError {
-    if (!(error instanceof QueryFailedError)) {
-      return {};
-    }
-
-    const withDriver = error as QueryFailedError & {
-      driverError?: PgDriverError;
-      code?: string;
-      detail?: string;
-      constraint?: string;
-    };
-
-    return {
-      code: withDriver.driverError?.code ?? withDriver.code,
-      detail: withDriver.driverError?.detail ?? withDriver.detail,
-      constraint: withDriver.driverError?.constraint ?? withDriver.constraint,
-    };
   }
 }

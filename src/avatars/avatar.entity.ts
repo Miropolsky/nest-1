@@ -27,9 +27,9 @@ export class AvatarEntity {
   @Column()
   fileName: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   uploadedAt: Date;
 
-  @DeleteDateColumn()
+  @DeleteDateColumn({ type: 'timestamptz' })
   deletedAt: Date | null;
 }

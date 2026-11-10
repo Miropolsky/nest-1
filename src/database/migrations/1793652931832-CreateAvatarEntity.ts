@@ -10,8 +10,8 @@ export class CreateAvatarEntity1793652931832 implements MigrationInterface {
         "id" SERIAL NOT NULL,
         "user_id" integer NOT NULL,
         "fileName" character varying NOT NULL,
-        "uploadedAt" TIMESTAMP NOT NULL DEFAULT now(),
-        "deletedAt" TIMESTAMP,
+        "uploadedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+        "deletedAt" TIMESTAMPTZ,
         CONSTRAINT "PK_avatar_entity" PRIMARY KEY ("id"),
         CONSTRAINT "FK_avatar_entity_user" FOREIGN KEY ("user_id") REFERENCES "user_entity"("id")
       )`,

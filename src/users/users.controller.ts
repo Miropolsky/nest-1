@@ -41,16 +41,25 @@ export class UsersController {
   }
 
   @Post('transfer')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Перевести деньги между пользователями' })
   @ApiResponse({
-    status: 200,
+    status: HttpStatus.OK,
     description: 'Деньги переведены',
     type: UserDto,
   })
-  @ApiResponse({ status: 401, description: 'Не авторизован' })
-  @ApiResponse({ status: 403, description: 'Нет доступа' })
-  @ApiResponse({ status: 404, description: 'Пользователь не найден' })
-  @ApiResponse({ status: 409, description: 'Недостаточно средств' })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Некорректная сумма, перевод себе или недостаточно средств',
+  })
+  @ApiResponse({
+    status: HttpStatus.UNAUTHORIZED,
+    description: 'Не авторизован',
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: 'Пользователь не найден',
+  })
   transfer(
     @Body() transferDto: TransferDto,
     @CurrentUser() current: JwtPayload,

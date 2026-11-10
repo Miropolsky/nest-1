@@ -18,9 +18,6 @@ export class ActiveUserDto {
   @ApiProperty({ example: 'Ivan' })
   login: string;
 
-  @ApiProperty({ example: 'ivan@example.com' })
-  email: string;
-
   @ApiProperty({ example: 'Описание пользователя' })
   description: string;
 

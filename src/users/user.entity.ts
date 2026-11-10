@@ -32,7 +32,7 @@ export class UserEntity {
   @Column({ type: 'varchar', nullable: true })
   refreshTokenHash: string | null;
 
-  @DeleteDateColumn()
+  @DeleteDateColumn({ type: 'timestamptz' })
   deletedAt: Date | null;
 
   @OneToMany(() => AvatarEntity, (avatar: AvatarEntity) => avatar.user)

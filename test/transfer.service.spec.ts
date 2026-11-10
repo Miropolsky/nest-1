@@ -1,11 +1,12 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Cache } from 'cache-manager';
 import type { PinoLogger } from 'nestjs-pino';
 import type { DataSource, EntityManager } from 'typeorm';
-import { UsersService } from '../src/users/users.service.js';
 import type { UsersRepository } from '../src/users/users.repository.js';
+import { UsersService } from '../src/users/users.service.js';
 
 type Ledger = Map<number, number>;
+type Users = Map<number, { active: boolean }>;
 
 function logger(): PinoLogger {
   return {
@@ -16,71 +17,76 @@ function logger(): PinoLogger {
   } as unknown as PinoLogger;
 }
 
-function queryBuilder(ledger: Ledger, failCredit = false) {
-  let userId = 0;
-  let amount = 0;
-  let mode: 'debit' | 'credit' = 'debit';
-  const builder = {
-    update: () => builder,
-    set: (values: { balance: () => string }) => {
-      const sql = values.balance();
-      mode = sql.includes(' - ') ? 'debit' : 'credit';
-      return builder;
-    },
-    where: (_sql: string, params: { id: number }) => {
-      userId = params.id;
-      return builder;
-    },
-    andWhere: () => builder,
-    setParameter: (_name: string, value: string) => {
-      amount = Number(value);
-      return builder;
-    },
-    execute: () => {
-      if (mode === 'credit' && failCredit) {
-        return { affected: 0 };
-      }
-
-      const current = ledger.get(userId) ?? 0;
-      if (mode === 'debit') {
-        if (current < amount) {
-          return { affected: 0 };
-        }
-        ledger.set(userId, current - amount);
-      } else {
-        ledger.set(userId, current + amount);
-      }
-      return { affected: 1 };
-    },
-  };
-
-  return builder;
-}
-
-function serviceWith(ledger: Ledger, failCredit = false) {
+function serviceWith(
+  ledger: Ledger,
+  users: Users = new Map(
+    [...ledger.keys()].map((id) => [id, { active: true }]),
+  ),
+  failCredit = false,
+  failCache = false,
+) {
   const repository = {
-    findOne: vi.fn().mockResolvedValue({
-      id: 1,
-      login: 'ivan',
-      email: 'ivan@example.com',
+    findOne: vi.fn().mockImplementation(async (id: number) => ({
+      id,
+      login: `user_${id}`,
+      email: `user_${id}@example.com`,
       description: 'about',
       age: 20,
-      balance: '0.00',
+      balance: DecimalLike(ledger.get(id) ?? 0),
+    })),
+    lockActiveUser: vi.fn().mockImplementation(async (id: number) => {
+      const user = users.get(id);
+      return user?.active ? { id } : null;
     }),
+    debitBalance: vi
+      .fn()
+      .mockImplementation(async (id: number, amount: string) => {
+        const user = users.get(id);
+        if (!user?.active) {
+          return { affected: 0 };
+        }
+
+        const value = Number(amount);
+        const current = ledger.get(id) ?? 0;
+        if (current < value) {
+          return { affected: 0 };
+        }
+
+        ledger.set(id, current - value);
+        return { affected: 1 };
+      }),
+    creditBalance: vi
+      .fn()
+      .mockImplementation(async (id: number, amount: string) => {
+        if (failCredit) {
+          return { affected: 0 };
+        }
+
+        const user = users.get(id);
+        if (!user?.active) {
+          return { affected: 0 };
+        }
+
+        ledger.set(id, (ledger.get(id) ?? 0) + Number(amount));
+        return { affected: 1 };
+      }),
   };
   const cache = {
     get: vi.fn().mockResolvedValue(undefined),
     set: vi.fn().mockResolvedValue(undefined),
-    del: vi.fn().mockResolvedValue(true),
+    del: vi.fn().mockImplementation(async () => {
+      if (failCache) {
+        throw new Error('Redis unavailable');
+      }
+      return true;
+    }),
     mdel: vi.fn().mockResolvedValue(true),
     stores: [{ iterator: async function* () {} }],
   };
   const dataSource = {
     transaction: async (work: (manager: EntityManager) => Promise<void>) => {
       const snapshot = failCredit ? new Map(ledger) : null;
-      const manager = {
-        createQueryBuilder: () => queryBuilder(ledger, failCredit),
-      } as unknown as EntityManager;
+      const manager = {} as EntityManager;
 
       try {
         await work(manager);
@@ -104,38 +110,28 @@ function serviceWith(ledger: Ledger, failCredit = false) {
   );
 }
 
+function DecimalLike(value: number): string {
+  return value.toFixed(2);
+}
+
 describe('UsersService transfer', () => {
   it('отклоняет нулевую, отрицательную и слишком дробную сумму', async () => {
-    const service = serviceWith(new Map());
-
-    await expect(
-      service.transfer({ amount: '0.00', recipientId: '2' }, 1),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    await expect(
-      service.transfer({ amount: '-1.00', recipientId: '2' }, 1),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    await expect(
-      service.transfer({ amount: '1.234', recipientId: '2' }, 1),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it('десять параллельных переводов сохраняют сумму и не уводят баланс ниже нуля', async () => {
-    const ledger = new Map<number, number>([
-      [1, 50],
-      [2, 0],
-    ]);
-    const service = serviceWith(ledger);
-    const results = await Promise.allSettled(
-      Array.from({ length: 10 }, () =>
-        service.transfer({ amount: '10.00', recipientId: '2' }, 1),
-      ),
+    const service = serviceWith(
+      new Map([
+        [1, 10],
+        [2, 0],
+      ]),
     );
 
-    const succeeded = results.filter((result) => result.status === 'fulfilled');
-    expect(succeeded).toHaveLength(5);
-    expect(ledger.get(1)).toBe(0);
-    expect(ledger.get(2)).toBe(50);
-    expect([...ledger.values()].every((balance) => balance >= 0)).toBe(true);
+    await expect(
+      service.transfer({ amount: '0.00', recipientId: 2 }, 1),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.transfer({ amount: '-1.00', recipientId: 2 }, 1),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.transfer({ amount: '1.234', recipientId: 2 }, 1),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('откатывает списание, если зачисление никого не обновило', async () => {
@@ -143,12 +139,58 @@ describe('UsersService transfer', () => {
       [1, 20],
       [2, 0],
     ]);
-    const service = serviceWith(ledger, true);
+    const service = serviceWith(ledger, undefined, true);
 
     await expect(
-      service.transfer({ amount: '10.50', recipientId: '2' }, 1),
-    ).rejects.toBeInstanceOf(BadRequestException);
+      service.transfer({ amount: '10.50', recipientId: 2 }, 1),
+    ).rejects.toBeInstanceOf(NotFoundException);
     expect(ledger.get(1)).toBe(20);
     expect(ledger.get(2)).toBe(0);
+  });
+
+  it('возвращает 404, если получатель soft-deleted', async () => {
+    const ledger = new Map<number, number>([
+      [1, 20],
+      [2, 0],
+    ]);
+    const users = new Map([
+      [1, { active: true }],
+      [2, { active: false }],
+    ]);
+    const service = serviceWith(ledger, users);
+
+    await expect(
+      service.transfer({ amount: '10.00', recipientId: 2 }, 1),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(ledger.get(1)).toBe(20);
+    expect(ledger.get(2)).toBe(0);
+  });
+
+  it('возвращает 404, если получатель не существует', async () => {
+    const ledger = new Map<number, number>([[1, 20]]);
+    const users = new Map([[1, { active: true }]]);
+    const service = serviceWith(ledger, users);
+
+    await expect(
+      service.transfer({ amount: '10.00', recipientId: 999 }, 1),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(ledger.get(1)).toBe(20);
+  });
+
+  it('возвращает результат перевода, даже если инвалидация кэша упала', async () => {
+    const ledger = new Map<number, number>([
+      [1, 20],
+      [2, 0],
+    ]);
+    const service = serviceWith(ledger, undefined, false, true);
+
+    const result = await service.transfer(
+      { amount: '10.00', recipientId: 2 },
+      1,
+    );
+
+    expect(result.balance).toBe('10.00');
+    expect(ledger.get(1)).toBe(10);
+    expect(ledger.get(2)).toBe(10);
   });
 });

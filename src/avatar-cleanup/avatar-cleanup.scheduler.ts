@@ -2,7 +2,10 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
+import { ClsService } from 'nestjs-cls';
 import { PinoLogger } from 'nestjs-pino';
+import { randomUUID } from 'node:crypto';
+import { runWithRequestId } from '../common/cls/run-with-request-id.js';
 import { AVATAR_CLEANUP_CRON_NAME } from './avatar-cleanup.constants.js';
 import { AvatarCleanupService } from './avatar-cleanup.service.js';
 
@@ -12,6 +15,7 @@ export class AvatarCleanupScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly config: ConfigService,
     private readonly avatarCleanupService: AvatarCleanupService,
+    private readonly cls: ClsService,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(AvatarCleanupScheduler.name);
@@ -23,7 +27,10 @@ export class AvatarCleanupScheduler implements OnModuleInit, OnModuleDestroy {
 
     this.schedulerRegistry.addCronJob(AVATAR_CLEANUP_CRON_NAME, job);
     job.start();
-    this.logger.info({ cronTime }, 'Avatar cleanup schedule registered');
+
+    runWithRequestId(this.cls, randomUUID(), () => {
+      this.logger.info({ cronTime }, 'Avatar cleanup schedule registered');
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -36,13 +43,15 @@ export class AvatarCleanupScheduler implements OnModuleInit, OnModuleDestroy {
   }
 
   private async enqueueScheduledCleanup(): Promise<void> {
-    try {
-      await this.avatarCleanupService.enqueue();
-    } catch (error) {
-      this.logger.error(
-        { name: error instanceof Error ? error.name : 'UnknownError' },
-        'Failed to enqueue avatar cleanup',
-      );
-    }
+    await runWithRequestId(this.cls, randomUUID(), async () => {
+      try {
+        await this.avatarCleanupService.enqueue();
+      } catch (error) {
+        this.logger.error(
+          { name: error instanceof Error ? error.name : 'UnknownError' },
+          'Failed to enqueue avatar cleanup',
+        );
+      }
+    });
   }
 }

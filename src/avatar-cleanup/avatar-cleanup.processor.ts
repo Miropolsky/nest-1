@@ -1,14 +1,22 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { Job } from 'bullmq';
+import { ClsService } from 'nestjs-cls';
 import { PinoLogger } from 'nestjs-pino';
+import { randomUUID } from 'node:crypto';
 import { AvatarsRepository } from '../avatars/avatars.repository.js';
+import { runWithRequestId } from '../common/cls/run-with-request-id.js';
 import { S3Service } from '../providers/s3/s3.service.js';
 import {
   AVATAR_CLEANUP_BATCH_SIZE,
   AVATAR_CLEANUP_JOB,
   AVATAR_CLEANUP_QUEUE,
+  AVATAR_ORPHAN_REMOVE_JOB,
 } from './avatar-cleanup.constants.js';
+import type {
+  AvatarCleanupJobData,
+  AvatarOrphanRemoveJobData,
+} from './avatar-cleanup.job.js';
 
 @Processor(AVATAR_CLEANUP_QUEUE)
 export class AvatarCleanupProcessor extends WorkerHost {
@@ -16,24 +24,70 @@ export class AvatarCleanupProcessor extends WorkerHost {
     private readonly avatarsRepository: AvatarsRepository,
     private readonly s3Service: S3Service,
     private readonly config: ConfigService,
+    private readonly cls: ClsService,
     private readonly logger: PinoLogger,
   ) {
     super();
     this.logger.setContext(AvatarCleanupProcessor.name);
   }
 
-  async process(job: Job): Promise<void> {
+  process(
+    job: Job<AvatarCleanupJobData | AvatarOrphanRemoveJobData>,
+  ): Promise<void> {
+    if (job.name === AVATAR_ORPHAN_REMOVE_JOB) {
+      const orphanJob = job as Job<AvatarOrphanRemoveJobData>;
+      const requestId = orphanJob.data?.requestId || randomUUID();
+
+      return runWithRequestId(this.cls, requestId, () =>
+        this.removeOrphan(orphanJob),
+      );
+    }
+
     if (job.name !== AVATAR_CLEANUP_JOB) {
       throw new Error(`Unknown job: ${job.name}`);
     }
 
+    const cleanupJob = job as Job<AvatarCleanupJobData>;
+    const requestId = cleanupJob.data?.requestId || randomUUID();
+
+    return runWithRequestId(this.cls, requestId, () =>
+      this.cleanupAvatars(cleanupJob),
+    );
+  }
+
+  private async removeOrphan(
+    job: Job<AvatarOrphanRemoveJobData>,
+  ): Promise<void> {
+    const { fileName, userId, requestId } = job.data;
+
+    this.logger.info(
+      { jobId: job.id, fileName, userId, requestId },
+      'Removing orphan avatar object',
+    );
+
+    try {
+      await this.s3Service.remove(fileName);
+    } catch (error) {
+      if (isMissingObject(error)) {
+        this.logger.warn(
+          { jobId: job.id, fileName },
+          'Orphan avatar object already removed',
+        );
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  private async cleanupAvatars(job: Job<AvatarCleanupJobData>): Promise<void> {
     const retentionDays = this.config.getOrThrow<number>(
       'avatarCleanup.retentionDays',
     );
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
     this.logger.info(
-      { jobId: job.id, retentionDays },
+      { jobId: job.id, retentionDays, requestId: job.data.requestId },
       'Starting avatar cleanup',
     );
 

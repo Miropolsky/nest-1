@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { App } from 'supertest/types';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../../src/app.module.js';
+import { resetEnvCache } from '../../src/config/env.schema.js';
 import { AddActiveUserIndexes1793655840321 } from '../../src/database/migrations/1793655840321-AddActiveUserIndexes.js';
 import { AddAvatarToUser1793567513444 } from '../../src/database/migrations/1793567513444-AddAvatarToUser.js';
 import { AddBalanceToUser1793714095819 } from '../../src/database/migrations/1793714095819-AddBalanceToUser.js';
 import { AddRefreshTokenHashToUser1793569914635 } from '../../src/database/migrations/1793569914635-AddRefreshTokenHashToUser.js';
 import { CreateAvatarEntity1793652931832 } from '../../src/database/migrations/1793652931832-CreateAvatarEntity.js';
 import { CreateUserEntity1793567513400 } from '../../src/database/migrations/1793567513400-CreateUserEntity.js';
+import { UseTimestamptzForEventDates1794240000000 } from '../../src/database/migrations/1794240000000-UseTimestamptzForEventDates.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TC_ENV_PATH = join(__dirname, '..', '.tc-env.json');
@@ -23,6 +25,7 @@ const migrations = [
   CreateAvatarEntity1793652931832,
   AddActiveUserIndexes1793655840321,
   AddBalanceToUser1793714095819,
+  UseTimestamptzForEventDates1794240000000,
 ];
 
 function applyTestcontainersEnv() {
@@ -31,6 +34,7 @@ function applyTestcontainersEnv() {
   for (const [key, value] of Object.entries(env)) {
     process.env[key] = value;
   }
+  resetEnvCache();
 }
 
 async function runMigrations() {
