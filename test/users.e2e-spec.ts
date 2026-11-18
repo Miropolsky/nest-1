@@ -84,9 +84,9 @@ describe('Users (e2e)', () => {
       .expect(200);
 
     expect(res.body.length).toBeGreaterThanOrEqual(1);
-    expect(res.body.every((u: { login: string }) => u.login.includes(owner.login))).toBe(
-      true,
-    );
+    expect(
+      res.body.every((u: { login: string }) => u.login.includes(owner.login)),
+    ).toBe(true);
   });
 
   it('GET /users?age=&sortBy=age → фильтр и сортировка', async () => {

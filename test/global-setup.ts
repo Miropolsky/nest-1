@@ -28,6 +28,16 @@ export async function setup() {
     JWT_REFRESH_SECRET: 'e2e-refresh-secret',
     JWT_EXPIRES_IN: '1h',
     JWT_REFRESH_EXPIRES_IN: '7d',
+    REDIS_URL: process.env.REDIS_URL ?? 'redis://localhost:6379',
+    REDIS_TTL: process.env.REDIS_TTL ?? '30000',
+    S3_REGION: process.env.S3_REGION ?? 'us-east-1',
+    S3_ENDPOINT: process.env.S3_ENDPOINT ?? 'http://localhost:9000',
+    S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? 'nestuser',
+    S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY ?? 'nestpass',
+    S3_BUCKET: process.env.S3_BUCKET ?? 'avatars',
+    AVATAR_CLEANUP_CRON: process.env.AVATAR_CLEANUP_CRON ?? '0 3 * * *',
+    AVATAR_CLEANUP_RETENTION_DAYS:
+      process.env.AVATAR_CLEANUP_RETENTION_DAYS ?? '7',
   };
 
   writeFileSync(TC_ENV_PATH, JSON.stringify(env, null, 2));

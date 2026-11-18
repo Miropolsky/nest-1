@@ -1,10 +1,16 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { CLS_ID, ClsService } from 'nestjs-cls';
+import { Logger } from 'nestjs-pino';
+import { randomUUID } from 'node:crypto';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.enableShutdownHooks();
+  const logger = app.get(Logger);
+  app.useLogger(logger);
 
   const config = new DocumentBuilder()
     .setTitle('Users API')
@@ -28,6 +34,14 @@ async function bootstrap() {
       },
     }),
   );
-  await app.listen(process.env.PORT ?? 3000);
+
+  const cls = app.get(ClsService);
+  const port = process.env.PORT ?? 3000;
+
+  await cls.run(async () => {
+    cls.set(CLS_ID, randomUUID());
+    await app.listen(port);
+    logger.log(`Application started on port ${port}`);
+  });
 }
 await bootstrap();

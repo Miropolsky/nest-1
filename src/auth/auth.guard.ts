@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
+import { PinoLogger } from 'nestjs-pino';
 import { IS_PUBLIC_KEY, type JwtPayload } from './constants.js';
 import type { RequestWithUser } from './types/request-with-user.js';
 
@@ -17,7 +18,10 @@ export class AuthGuard implements CanActivate {
     private jwtService: JwtService,
     private reflector: Reflector,
     private configService: ConfigService,
-  ) {}
+    private readonly logger: PinoLogger,
+  ) {
+    this.logger.setContext(AuthGuard.name);
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
@@ -33,6 +37,7 @@ export class AuthGuard implements CanActivate {
     const token = this.extractTokenFromHeader(request);
 
     if (!token) {
+      this.logger.warn('Access denied: missing token');
       throw new UnauthorizedException();
     }
 
@@ -42,11 +47,16 @@ export class AuthGuard implements CanActivate {
       });
 
       if (payload.type !== 'access') {
+        this.logger.warn('Access denied: invalid token type');
         throw new UnauthorizedException('Invalid token type');
       }
 
       request.user = payload;
-    } catch {
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      this.logger.warn('Access denied: invalid token');
       throw new UnauthorizedException();
     }
     return true;
